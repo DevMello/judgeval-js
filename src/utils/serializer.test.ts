@@ -115,6 +115,46 @@ describe("safeStringify", () => {
     expect((result.b as Record<string, unknown>).a).toBe("[Circular]");
   });
 
+  test("shared references are preserved even when a bigint forces conversion", () => {
+    const shared = { x: 1 };
+    const obj = { big: BigInt(1), a: shared, b: shared };
+    expect(safeStringify(obj)).toBe('{"big":"1","a":{"x":1},"b":{"x":1}}');
+  });
+
+  test("Map serializes to an object with stringified keys", () => {
+    const map = new Map<unknown, unknown>([
+      ["a", 1],
+      [2, "two"],
+    ]);
+    // JS object semantics order integer-like keys first.
+    expect(safeStringify(map)).toBe('{"2":"two","a":1}');
+    expect(safeStringify({ m: new Map([["k", "v"]]) })).toBe(
+      '{"m":{"k":"v"}}',
+    );
+  });
+
+  test("Set serializes to an array", () => {
+    expect(safeStringify(new Set([1, 2, 3]))).toBe("[1,2,3]");
+    expect(safeStringify({ s: new Set(["a"]) })).toBe('{"s":["a"]}');
+  });
+
+  test("Error serializes to name and message", () => {
+    expect(safeStringify(new TypeError("boom"))).toBe(
+      '{"name":"TypeError","message":"boom"}',
+    );
+  });
+
+  test("self-referencing Map does not loop", () => {
+    const map = new Map<string, unknown>();
+    map.set("self", map);
+    expect(safeStringify(map)).toBe('{"self":"[Circular]"}');
+  });
+
+  test("Date uses toJSON", () => {
+    const date = new Date("2026-01-02T03:04:05.000Z");
+    expect(safeStringify({ d: date })).toBe('{"d":"2026-01-02T03:04:05.000Z"}');
+  });
+
   test("matches JSON.stringify for safe values", () => {
     const values = [
       { key: "value" },

@@ -2,34 +2,71 @@ import { Logger } from "./logger";
 
 export type Serializer = (obj: unknown) => string;
 
-function createCircularReplacer(): (
-  this: unknown,
-  key: string,
-  value: unknown,
-) => unknown {
-  const seen = new WeakSet<object>();
-  return function (_key: string, value: unknown): unknown {
-    if (typeof value === "bigint") return value.toString();
-    if (typeof value === "object" && value !== null) {
-      if (seen.has(value)) return "[Circular]";
-      seen.add(value);
+const CIRCULAR = "[Circular]";
+
+/**
+ * Recursively convert `value` into a JSON-serializable structure, mirroring
+ * the Python SDK's `json_encoder` (utils/serialize.py): BigInt becomes a
+ * string, Map becomes a plain object with stringified keys, Set becomes an
+ * array, and Error becomes `{name, message}`.
+ *
+ * Cycle detection tracks the ancestor path only, so shared (diamond)
+ * references are preserved and just true cycles collapse to "[Circular]".
+ */
+function toSerializable(value: unknown, ancestors: Set<object>): unknown {
+  if (typeof value === "bigint") return value.toString();
+  if (typeof value !== "object" || value === null) return value;
+  if (ancestors.has(value)) return CIRCULAR;
+
+  ancestors.add(value);
+  try {
+    if (typeof (value as { toJSON?: unknown }).toJSON === "function") {
+      return toSerializable(
+        (value as { toJSON: () => unknown }).toJSON(),
+        ancestors,
+      );
     }
-    return value;
-  };
+    if (value instanceof Map) {
+      const out: Record<string, unknown> = {};
+      for (const [key, entry] of value) {
+        out[typeof key === "string" ? key : String(key)] = toSerializable(
+          entry,
+          ancestors,
+        );
+      }
+      return out;
+    }
+    if (value instanceof Set) {
+      return Array.from(value, (entry) => toSerializable(entry, ancestors));
+    }
+    if (value instanceof Error) {
+      return { name: value.name, message: value.message };
+    }
+    if (Array.isArray(value)) {
+      return value.map((entry) => toSerializable(entry, ancestors));
+    }
+    const out: Record<string, unknown> = {};
+    for (const [key, entry] of Object.entries(value)) {
+      out[key] = toSerializable(entry, ancestors);
+    }
+    return out;
+  } finally {
+    ancestors.delete(value);
+  }
 }
 
 export function safeStringify(obj: unknown): string {
   try {
-    const result = JSON.stringify(obj);
+    const result = JSON.stringify(toSerializable(obj, new Set()));
     if (typeof result === "string") return result;
     return String(result);
-  } catch {
+  } catch (e) {
+    Logger.error(`safeStringify failed: ${e}`);
     try {
-      const result = JSON.stringify(obj, createCircularReplacer());
-      return typeof result === "string" ? result : String(obj);
-    } catch (e) {
-      Logger.error(`safeStringify failed: ${e}`);
       return String(obj);
+    } catch {
+      // String() itself throws for null-prototype objects and revoked proxies.
+      return "[Unserializable]";
     }
   }
 }
