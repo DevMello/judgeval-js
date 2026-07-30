@@ -14,6 +14,32 @@ interface ScorerJobResult {
 }
 
 /**
+ * Cap on simultaneous scorer calls, mirroring the Python SDK's
+ * ThreadPoolExecutor default (min(32, cpu + 4)) so large example sets do
+ * not fire hundreds of concurrent LLM requests at once.
+ */
+const MAX_CONCURRENT_SCORER_CALLS = 32;
+
+async function runWithConcurrency<T>(
+  thunks: Array<() => Promise<T>>,
+  limit: number,
+): Promise<T[]> {
+  const results = new Array<T>(thunks.length);
+  let next = 0;
+  const workers = Array.from(
+    { length: Math.min(limit, thunks.length) },
+    async () => {
+      while (next < thunks.length) {
+        const i = next++;
+        results[i] = await thunks[i]();
+      }
+    },
+  );
+  await Promise.all(workers);
+  return results;
+}
+
+/**
  * Evaluation runner for custom (in-process) scorers.
  *
  * Runs all {@link Judge} instances locally against the provided examples,
@@ -49,31 +75,24 @@ export class LocalEvaluatorRunner extends EvaluatorRunner<Judge> {
   ): Promise<number> {
     const startTime = Date.now();
 
-    const jobs: Promise<ScorerJobResult>[] = examples.flatMap(
+    const jobs: Array<() => Promise<ScorerJobResult>> = examples.flatMap(
       (example, exampleIdx) =>
-        scorers.map((scorer) =>
-          scorer
-            .score(example)
-            .then(
-              (result): ScorerJobResult => ({
-                exampleIdx,
-                scorer,
-                result,
-                error: null,
-              }),
-            )
-            .catch(
-              (err: unknown): ScorerJobResult => ({
-                exampleIdx,
-                scorer,
-                result: null,
-                error: String(err),
-              }),
-            ),
+        scorers.map(
+          (scorer) => async (): Promise<ScorerJobResult> => {
+            try {
+              const result = await scorer.score(example);
+              return { exampleIdx, scorer, result, error: null };
+            } catch (err) {
+              return { exampleIdx, scorer, result: null, error: String(err) };
+            }
+          },
         ),
     );
 
-    const jobResults = await Promise.all(jobs);
+    const jobResults = await runWithConcurrency(
+      jobs,
+      MAX_CONCURRENT_SCORER_CALLS,
+    );
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
     console.log(
       `${pc.green("\u2713")} Scoring completed in ${pc.bold(`${elapsed}s`)}`,
