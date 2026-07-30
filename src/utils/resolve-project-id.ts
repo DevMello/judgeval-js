@@ -1,4 +1,4 @@
-import type { JudgmentApiClient } from "../internal/api";
+import { JudgmentAPIError, type JudgmentApiClient } from "../internal/api";
 import { Logger } from "./logger";
 import { retry } from "./retry";
 
@@ -39,6 +39,16 @@ export async function resolveProjectId(
             `Failed to resolve project ID for '${projectName}' (attempt ${attempt}): ${String(error)}`,
           );
         },
+        // 4xx responses (bad key, missing project) will not change on
+        // retry; only retry transient failures (transport, 5xx, 408, 429).
+        shouldRetry: (error) =>
+          !(
+            error instanceof JudgmentAPIError &&
+            error.status >= 400 &&
+            error.status < 500 &&
+            error.status !== 408 &&
+            error.status !== 429
+          ),
       },
     );
     Logger.info(`Resolved project ID: ${projectId}`);

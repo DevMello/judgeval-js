@@ -11,6 +11,12 @@ export interface RetryConfig {
   backoff?: (iteration: number) => number;
   /** Called after each failed attempt, before sleeping for the backoff. */
   onRetry?: (attempt: number, error: unknown) => void;
+  /**
+   * Predicate deciding whether an error is retryable. Return `false` to
+   * rethrow immediately without further attempts. Defaults to retrying
+   * every error.
+   */
+  shouldRetry?: (error: unknown) => boolean;
 }
 
 /**
@@ -30,13 +36,13 @@ export async function retry<T>(
   fn: () => Promise<T>,
   config: RetryConfig = {},
 ): Promise<T> {
-  const { maxRetries = 3, backoff = () => 1000, onRetry } = config;
+  const { maxRetries = 3, backoff = () => 1000, onRetry, shouldRetry } = config;
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
       return await fn();
     } catch (error) {
-      if (attempt === maxRetries) {
+      if (attempt === maxRetries || (shouldRetry && !shouldRetry(error))) {
         throw error;
       }
 
