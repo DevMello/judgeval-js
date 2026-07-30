@@ -64,6 +64,40 @@ test("sends only public query fields and tenant headers", async () => {
   expect(response.rows).toEqual([{ trace_id: "trace-1" }]);
 });
 
+test("discover sends limit once, at the request level only", async () => {
+  let request: Request | undefined;
+  globalThis.fetch = ((input, init) => {
+    request =
+      input instanceof Request
+        ? input
+        : new Request(input instanceof URL ? input.toString() : input, init);
+    return Promise.resolve(
+      new Response(
+        JSON.stringify({
+          query_id: "q-1",
+          rows: [],
+          row_count: 0,
+          elapsed_ms: 1,
+        }),
+        { status: 200 },
+      ),
+    );
+  }) as typeof fetch;
+  const client = new JudgevalJqlClient(
+    "https://api.example.com",
+    "api-key",
+    "org-1",
+    "project-1",
+  );
+
+  await client.discover("judges", { limit: 25 });
+
+  expect(await request?.json()).toEqual({
+    query: { op: "discovery", kind: "judges" },
+    limit: 25,
+  });
+});
+
 describe("public JQL errors", () => {
   test("preserves typed error details and Retry-After", async () => {
     globalThis.fetch = (() =>
@@ -95,6 +129,55 @@ describe("public JQL errors", () => {
         hint: "Slow down.",
         retryAfterSeconds: 2,
       });
+    }
+  });
+
+  test("ignores HTTP-date and empty Retry-After values", async () => {
+    for (const headerValue of ["Wed, 21 Oct 2026 07:28:00 GMT", ""]) {
+      globalThis.fetch = (() =>
+        Promise.resolve(
+          new Response(JSON.stringify({ message: "Maintenance." }), {
+            status: 503,
+            headers: headerValue ? { "Retry-After": headerValue } : {},
+          }),
+        )) as unknown as typeof fetch;
+      const client = new JudgevalJqlClient(
+        "https://api.example.com",
+        "api-key",
+        "org-1",
+        "project-1",
+      );
+
+      try {
+        await client.query(traces().ids());
+        throw new Error("expected query to fail");
+      } catch (error) {
+        expect(error).toBeInstanceOf(JudgevalAPIError);
+        expect((error as JudgevalAPIError).retryAfterSeconds).toBeUndefined();
+      }
+    }
+  });
+
+  test("uses FastAPI-style detail for the error message", async () => {
+    globalThis.fetch = (() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ detail: "Project not found." }), {
+          status: 404,
+        }),
+      )) as unknown as typeof fetch;
+    const client = new JudgevalJqlClient(
+      "https://api.example.com",
+      "api-key",
+      "org-1",
+      "project-1",
+    );
+
+    try {
+      await client.query(traces().ids());
+      throw new Error("expected query to fail");
+    } catch (error) {
+      expect(error).toBeInstanceOf(JudgevalAPIError);
+      expect((error as JudgevalAPIError).message).toBe("Project not found.");
     }
   });
 });

@@ -63,8 +63,10 @@ export class JudgevalJqlClient {
     kind: DiscoveryKind,
     options: DiscoveryOptions & JqlRequestOptions = {},
   ): Promise<JqlQueryResponse> {
-    const { signal, ...discoveryOptions } = options;
-    const { limit } = options;
+    // `limit` is a request-level option only: strip it from the discovery
+    // node so the wire payload carries it exactly once (parity with the
+    // Python SDK's tested contract).
+    const { signal, limit, ...discoveryOptions } = options;
     return this.query(discovery(kind, discoveryOptions), { limit, signal });
   }
 
@@ -91,19 +93,27 @@ export class JudgevalJqlClient {
     );
     const text = await response.text();
     if (!response.ok) {
-      let payload: { error?: string; message?: string; hint?: string } = {};
+      let payload: {
+        detail?: string;
+        error?: string;
+        message?: string;
+        hint?: string;
+      } = {};
       try {
         payload = JSON.parse(text) as typeof payload;
       } catch {
         // Preserve the response body below when the server did not return JSON.
       }
+      // Tolerate HTTP-date and empty Retry-After values (parity with the
+      // Python SDK): only a finite numeric header becomes a seconds value.
       const retryAfter = response.headers.get("Retry-After");
+      const retryAfterSeconds = retryAfter ? Number(retryAfter) : Number.NaN;
       throw new JudgevalAPIError(
         response.status,
         payload.error ?? `HTTP_${response.status}`,
-        payload.message ?? text,
+        payload.detail ?? payload.message ?? text,
         payload.hint ?? "",
-        retryAfter === null ? undefined : Number(retryAfter),
+        Number.isFinite(retryAfterSeconds) ? retryAfterSeconds : undefined,
       );
     }
     return JSON.parse(text) as T;
