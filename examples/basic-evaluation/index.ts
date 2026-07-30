@@ -59,14 +59,12 @@ async function main() {
     examples,
     scorers: [new ContainsExpectedAnswer(), new OutputLength()],
     evalRunName: "basic-eval",
-    assertTest: true,
   });
 
   for (const result of results) {
-    console.log(`Success: ${result.success}`);
-    for (const scorer of result.scorers) {
+    for (const scorer of result.scorersData) {
       console.log(
-        `  ${scorer.name}: score=${scorer.score}, reason=${scorer.reason}`,
+        `  ${scorer.name}: value=${scorer.value}${scorer.error ? `, error=${scorer.error}` : ""}`,
       );
     }
   }

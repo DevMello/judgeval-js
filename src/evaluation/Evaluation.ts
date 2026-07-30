@@ -17,8 +17,9 @@ export interface EvaluationRunOptions {
   /** A name for this run, visible in the dashboard. */
   evalRunName: string;
   /**
-   * If true, throws an error when any scorer fails its threshold.
-   * Useful in CI/CD pipelines.
+   * @deprecated Ignored by the current evaluation result payload, which no
+   * longer carries per-scorer thresholds. Inspect the returned
+   * {@link ScoringResult} `scorersData` instead.
    */
   assertTest?: boolean;
   /**

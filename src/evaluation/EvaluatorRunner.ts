@@ -3,11 +3,41 @@ import type { JudgmentApiClient } from "../internal/api/client";
 import type { ExampleEvaluationRun } from "../internal/api/models/ExampleEvaluationRun";
 import type { ExperimentRunItem } from "../internal/api/models/ExperimentRunItem";
 import type { Example } from "../data/Example";
-import type { ScoringResult } from "../data/ScoringResult";
+import type { ScorerData, ScoringResult } from "../data/ScoringResult";
 import type { Judge } from "../judges/Judge";
 import { Logger } from "../utils/logger";
 
 const POLL_INTERVAL_MS = 2000;
+
+function binaryLabel(value: boolean): string {
+  return value ? "Yes" : "No";
+}
+
+/**
+ * Extract the display value from a scorer row, honoring `score_type` when
+ * present and falling back to whichever typed value the row carries.
+ * Port of the Python SDK's `_scorer_value` (evaluation_base.py).
+ */
+function scorerValue(row: Record<string, unknown>): string | number | null {
+  const scoreType = row.score_type;
+
+  if (scoreType === "binary") {
+    return typeof row.bool_value === "boolean"
+      ? binaryLabel(row.bool_value)
+      : null;
+  }
+  if (scoreType === "categorical") {
+    return typeof row.str_value === "string" ? row.str_value : null;
+  }
+  if (scoreType === "numeric") {
+    return typeof row.num_value === "number" ? row.num_value : null;
+  }
+
+  if (typeof row.bool_value === "boolean") return binaryLabel(row.bool_value);
+  if (typeof row.str_value === "string") return row.str_value;
+  if (typeof row.num_value === "number") return row.num_value;
+  return null;
+}
 
 /**
  * Abstract base for evaluation runners.
@@ -90,70 +120,75 @@ export abstract class EvaluatorRunner<S extends string | Judge> {
     assertTest: boolean,
   ): ScoringResult[] {
     const results: ScoringResult[] = [];
-    let passed = 0;
-    let failed = 0;
 
     console.log();
+
+    if (assertTest) {
+      Logger.warning(
+        "assertTest is deprecated and ignored by the current " +
+          "evaluation result payload.",
+      );
+    }
 
     for (let i = 0; i < resultsData.length; i++) {
       const res = resultsData[i];
-      const success = res.scorers.every((s) => Boolean(s.success));
+      // Rows from the experiments alias may be legacy experiment rows or
+      // offline test-run rows; both carry judge_name/score_type/typed
+      // values, so parse tolerantly like the Python SDK does.
+      const scorersData: ScorerData[] = (res.scorers ?? []).map((scorer) => {
+        const row = scorer as unknown as Record<string, unknown>;
+        const metadata = row.additional_metadata ?? row.metadata;
+        return {
+          name: typeof row.judge_name === "string" ? row.judge_name : null,
+          value: scorerValue(row),
+          scoreType:
+            typeof row.score_type === "string" ? row.score_type : null,
+          // Tolerate both encodings: boolean|null (test-run rows) and
+          // numeric 0/1 (legacy experiment rows).
+          success:
+            typeof row.success === "boolean"
+              ? row.success
+              : typeof row.success === "number"
+                ? row.success !== 0
+                : null,
+          error: typeof row.error === "string" ? row.error : null,
+          evaluationModel:
+            typeof row.evaluation_model === "string"
+              ? row.evaluation_model
+              : null,
+          additionalMetadata:
+            typeof metadata === "object" && metadata !== null
+              ? (metadata as Record<string, unknown>)
+              : {},
+          id: typeof row.scorer_data_id === "string" ? row.scorer_data_id : null,
+          minimumScoreRange:
+            typeof row.minimum_score_range === "number"
+              ? row.minimum_score_range
+              : 0,
+          maximumScoreRange:
+            typeof row.maximum_score_range === "number"
+              ? row.maximum_score_range
+              : 1,
+        };
+      });
 
-      if (success) {
-        passed++;
-        console.log(
-          `${pc.green("\u2713")} Example ${i + 1}: ${pc.green("PASSED")}`,
-        );
-      } else {
-        failed++;
-        console.log(
-          `${pc.red("\u2717")} Example ${i + 1}: ${pc.red("FAILED")}`,
-        );
+      console.log(`${pc.cyan("\u2022")} Example ${i + 1}:`);
+      for (const s of scorersData) {
+        const valueStr =
+          typeof s.value === "number" ? s.value.toFixed(3) : (s.value ?? "N/A");
+        console.log(`  ${pc.dim(`${s.name}:`)} ${pc.cyan(String(valueStr))}`);
+        if (s.error) console.log(`    ${pc.red(s.error)}`);
       }
 
-      for (const s of res.scorers) {
-        const scoreStr = s.score !== null ? s.score.toFixed(3) : "N/A";
-        const colored = s.success ? pc.green(scoreStr) : pc.red(scoreStr);
-        console.log(
-          `  ${pc.dim(`${s.name}:`)} ${colored} ${pc.dim(`(threshold: ${s.threshold})`)}`,
-        );
-      }
-
-      results.push({ success, scorers: res.scorers, example: examples[i] });
+      results.push({ scorersData, example: examples[i] });
     }
 
     console.log();
-    if (passed === results.length) {
-      console.log(
-        `${pc.bold(pc.green("\u2713 All tests passed!"))} (${passed}/${results.length})`,
-      );
-    } else {
-      console.log(
-        `${pc.bold(pc.yellow("\u26A0 Results:"))} ${pc.green(`${passed} passed`)} | ${pc.red(`${failed} failed`)}`,
-      );
-    }
+    console.log(
+      `${pc.bold(pc.green("\u2713"))} Results ready (${results.length})`,
+    );
     console.log(`${pc.dim("View full details:")} ${pc.underline(url)}`);
     console.log();
-
-    if (assertTest && results.some((r) => !r.success)) {
-      const lines = [
-        `Evaluation failed: ${failed}/${results.length} examples failed`,
-      ];
-      for (let i = 0; i < results.length; i++) {
-        if (!results[i].success) {
-          lines.push(`  Example ${i + 1}:`);
-          for (const s of results[i].scorers) {
-            if (!s.success) {
-              lines.push(
-                `    ${s.name}: ${s.score !== null ? s.score.toFixed(3) : "N/A"} (threshold: ${s.threshold})`,
-              );
-              if (s.reason) lines.push(`      ${s.reason}`);
-            }
-          }
-        }
-      }
-      throw new Error(lines.join("\n"));
-    }
 
     return results;
   }

@@ -25,7 +25,7 @@ export {
 export { wrap, wrapOpenAI } from "./instrumentation";
 
 export { Example } from "./data";
-export type { ScoringResult } from "./data";
+export type { ScorerData, ScoringResult } from "./data";
 
 export { Judge } from "./judges";
 export type {
