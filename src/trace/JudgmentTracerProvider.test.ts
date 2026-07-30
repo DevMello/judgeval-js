@@ -204,3 +204,44 @@ describe("BaseTracer.startActiveSpan span lifecycle", () => {
     }
   });
 });
+
+describe("JudgmentTracerProvider.restoreActive", () => {
+  test("restores a previously captured tracer without registering it", () => {
+    const proxy = JudgmentTracerProvider.getInstance();
+    const previous = proxy.getActiveTracer();
+    const sdkProvider = new BasicTracerProvider();
+    const t1 = new FakeTracer(sdkProvider);
+    const t2 = new FakeTracer(sdkProvider);
+    try {
+      proxy.setActive(t1);
+      expect(proxy.getActiveTracer()).toBe(t1);
+
+      proxy.restoreActive(t2);
+      expect(proxy.getActiveTracer()).toBe(t2);
+
+      // Unlike setActive, restoreActive must not register the tracer:
+      // deregistering it is a no-op because it was never added.
+      proxy.deregister(t2);
+      proxy.restoreActive(t1);
+      expect(proxy.getActiveTracer()).toBe(t1);
+    } finally {
+      proxy.deregister(t1);
+      proxy.deregister(t2);
+      proxy.restoreActive(previous ?? null);
+    }
+  });
+
+  test("restoreActive(null) deactivates entirely", () => {
+    const proxy = JudgmentTracerProvider.getInstance();
+    const previous = proxy.getActiveTracer();
+    const t1 = new FakeTracer(new BasicTracerProvider());
+    try {
+      proxy.setActive(t1);
+      proxy.restoreActive(null);
+      expect(proxy.getActiveTracer()).toBeNull();
+    } finally {
+      proxy.deregister(t1);
+      proxy.restoreActive(previous ?? null);
+    }
+  });
+});

@@ -218,20 +218,19 @@ export class OfflineTestRunner {
   /**
    * Run the agent once per dataset example, producing one offline trace each.
    *
-   * NOTE: the offline-tracer lifecycle here (active-tracer swap, async
-   * `observe`, per-example trace attribution) still needs validation against a
-   * live run.
+   * The offline tracer is activated only for the duration of the run: the
+   * previously active tracer (or none) is restored afterward, the offline
+   * tracer is deregistered, and its provider is flushed and shut down so
+   * every agent trace is exported before the test run is created.
    */
   async runAgent(
     agentFunction: AgentFunction,
     examples: ExampleRow[],
   ): Promise<Record<string, string>> {
     const captured: Example[] = [];
-    // Restore whatever tracer was active before we swap in the offline tracer,
-    // so an agent run doesn't leave the offline tracer globally active.
-    const previousTracer =
-      JudgmentTracerProvider.getInstance().getActiveTracer();
-    await OfflineTracer.create({
+    const proxy = JudgmentTracerProvider.getInstance();
+    const previousTracer = proxy.getActiveTracer();
+    const tracer = await OfflineTracer.create({
       projectName: this._projectName,
       apiKey: this._client.getApiKey(),
       organizationId: this._client.getOrganizationId(),
@@ -261,8 +260,20 @@ export class OfflineTestRunner {
         }
       }
     } finally {
-      await Tracer.forceFlush();
-      if (previousTracer) previousTracer.setActive();
+      // Each teardown step is failure-isolated: a flush/shutdown rejection
+      // must never leave the offline tracer globally active.
+      try {
+        await tracer._tracerProvider.forceFlush();
+      } catch (error) {
+        Logger.error(`Offline tracer flush failed: ${String(error)}`);
+      }
+      proxy.restoreActive(previousTracer);
+      proxy.deregister(tracer);
+      try {
+        await tracer._tracerProvider.shutdown();
+      } catch (error) {
+        Logger.error(`Offline tracer shutdown failed: ${String(error)}`);
+      }
     }
 
     return agentTraces;
