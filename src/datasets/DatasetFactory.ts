@@ -1,6 +1,6 @@
 import type { JudgmentApiClient } from "../internal/api/client";
 import type { PullAllOfflineDatasetsResponse } from "../internal/api/models";
-import { Example, type ExampleDict } from "../data/Example";
+import { Example } from "../data/Example";
 import { Logger } from "../utils/logger";
 import { Dataset } from "./Dataset";
 import {
@@ -53,16 +53,11 @@ export class DatasetFactory {
 
     const datasetKind = response.dataset_kind ?? "example";
     // Offline datasets nest the user fields under `data` and carry server
-    // metadata (organization_id, project_id, user_id) at the top level. Unwrap
-    // `data` so user properties (input, etc.) become the Example's properties —
-    // otherwise `example.get("input")` is undefined and the metadata / the
-    // nested `data` object leak into properties.
+    // metadata plus the entry-level `offline_trace_id` at the top level.
+    // fromDatasetEntry unwraps `data` into properties and preserves the
+    // trace linkage (parity with Python's example_from_dataset_entry).
     const examples = (response.examples ?? []).map((e) =>
-      Example.from({
-        ...(e.data ?? {}),
-        example_id: e.example_id,
-        created_at: e.created_at ?? "",
-      } as ExampleDict),
+      Example.fromDatasetEntry(e as unknown as Record<string, unknown>),
     );
 
     return new Dataset({

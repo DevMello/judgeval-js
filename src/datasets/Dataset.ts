@@ -57,7 +57,10 @@ export class Dataset {
       await this._client.postV1projectsDatasetsByDatasetIdentifierExamples(
         this.projectId,
         this.name,
-        { examples: batch.map((e) => e.toJSON()) },
+        // Dataset entries carry example_id/created_at plus the custom
+        // properties only — no `name` field (parity with Python's
+        // example_to_dataset_entry).
+        { examples: batch.map((e) => e.toDatasetEntry()) },
       );
     }
   }
@@ -80,7 +83,11 @@ export class Dataset {
       if (typeof item !== "object" || item === null) {
         throw new Error("Each item in the JSON array must be an object");
       }
-      return Example.create(item as Record<string, unknown>);
+      // A `name` key becomes the Example's name; every other key becomes a
+      // property, and a fresh id/timestamp is generated (parity with
+      // Python's add_from_json).
+      const { name, ...props } = item as Record<string, unknown>;
+      return Example.create(props, typeof name === "string" ? name : null);
     });
 
     await this.addExamples(examples, batchSize);
